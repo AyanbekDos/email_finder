@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict
 import aiofiles
 import aiohttp
-from telegram import Update, Document, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Document, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
@@ -30,32 +30,52 @@ class EmailScraperBot:
         self.active_tasks: Dict[int, asyncio.Task] = {}
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /start"""
-        welcome_text = """
-🔍 **Email Scraper Bot**
+        """Команда /start, показывает приветствие и главное меню."""
+        user_name = update.effective_user.first_name
+        welcome_text = (
+            f"👋 Привет, {user_name}!\n\n"
+            "Я бот для сбора email-адресов с сайтов. "
+            "Используйте меню ниже, чтобы начать работу."
+        )
+        
+        keyboard = [
+            ["🚀 Начать скрапинг"],
+            ["📈 Мой статус", "❓ Помощь"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
-Отправьте .txt файл со списком URL (один URL на строку), и я найду все email адреса на этих сайтах.
+    async def show_scraping_instructions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает подробные инструкции по запуску скрапинга."""
+        instructions_text = """
+🚀 **Как начать скрапинг:**
 
-**Возможности:**
-✅ Быстрое сканирование ключевых страниц
-✅ Поиск на страницах: контакты, о нас, команда
-✅ Параллельная обработка сайтов
-✅ Результат в Excel файле
-✅ Прогресс-бар в реальном времени
+**Способ 1: Отправьте файл**
+Создайте `.txt` файл, где каждый URL находится на новой строке, и отправьте его мне.
+
+**Способ 2: Отправьте сообщение**
+Просто напишите или вставьте список сайтов в чат.
+
+**Примеры форматов, которые я пойму:**
+✅ `example.com`
+✅ `www.example.com`
+✅ `https://example.com`
+
+---
+**Что дальше?**
+Я начну сканирование и буду показывать прогресс. В конце вы получите `Excel` файл с результатами.
 
 **Ограничения:**
-📁 Максимальный размер файла: {max_size} МБ
-⏱️ Таймаут на сайт: {timeout} минут
-🔄 Максимум {max_pages} страниц на домен
-
-Просто отправьте .txt файл для начала!
+📁 Макс. размер файла: {max_size} МБ
+⏱️ Таймаут на сайт: {timeout} мин.
+🔄 Макс. страниц на домен: {max_pages}
         """.format(
             max_size=config.MAX_FILE_SIZE_MB,
             timeout=config.SITE_TIMEOUT_MINUTES,
             max_pages=config.MAX_PAGES_PER_DOMAIN
         )
-        
-        await update.message.reply_text(welcome_text, parse_mode='Markdown')
+        await update.message.reply_text(instructions_text, parse_mode='Markdown')
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка загруженного файла"""
@@ -296,11 +316,76 @@ class EmailScraperBot:
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /status"""
         user_id = update.effective_user.id
-        
         if user_id in self.active_tasks and not self.active_tasks[user_id].done():
-            await update.message.reply_text("🔄 У вас есть активная задача сканирования")
+            await update.message.reply_text("🔄 У вас есть активная задача сканирования.")
         else:
-            await update.message.reply_text("✅ У вас нет активных задач")
+            await update.message.reply_text("✅ Нет активных задач сканирования.")
+
+    async def handle_text_urls(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка текстовых сообщений с URL"""
+        user_id = update.effective_user.id
+        text = update.message.text.strip()
+        
+        # Проверяем, содержит ли сообщение URL-подобные строки
+        potential_urls = []
+        lines = text.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#') and not line.startswith('//'):
+                # Простая проверка на URL-подобную строку
+                if ('.' in line and ' ' not in line and len(line) > 3 and 
+                    not line.startswith('/') and not line.startswith('@')):
+                    potential_urls.append(line)
+        
+        if not potential_urls:
+            # Если не похоже на URL, показываем подсказку
+            await update.message.reply_text(
+                "💡 **Как отправить URL для сканирования:**\n\n"
+                "**Вариант 1:** Отправьте .txt файл со списком URL\n"
+                "**Вариант 2:** Отправьте URL прямо в сообщении:\n\n"
+                "```\n"
+                "biohaus.it\n"
+                "fassabortolo.com\n"
+                "casalgrandepadana.it\n"
+                "```\n\n"
+                "**Поддерживаемые форматы:**\n"
+                "• `example.com`\n"
+                "• `www.example.com`\n"
+                "• `https://example.com`\n"
+                "• `http://example.com`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Проверка активных задач
+        if user_id in self.active_tasks and not self.active_tasks[user_id].done():
+            keyboard = [[InlineKeyboardButton("❌ Отменить текущую задачу", callback_data=f"cancel_{user_id}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                "⚠️ У вас уже есть активная задача. Отмените её или дождитесь завершения.",
+                reply_markup=reply_markup
+            )
+            return
+        
+        try:
+            status_message = await update.message.reply_text(
+                f"📝 Получено {len(potential_urls)} URL из сообщения:\n\n" +
+                "\n".join(f"• `{url}`" for url in potential_urls[:5]) +
+                (f"\n• ... и еще {len(potential_urls) - 5}" if len(potential_urls) > 5 else "") +
+                "\n\n🔍 Начинаю сканирование...",
+                parse_mode='Markdown'
+            )
+            
+            # Создаем задачу сканирования
+            task = asyncio.create_task(
+                self._process_urls(potential_urls, user_id, update, context, status_message)
+            )
+            self.active_tasks[user_id] = task
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обработке текстовых URL: {e}")
+            await update.message.reply_text("❌ Произошла ошибка при обработке URL!")
 
 def main():
     """Запуск бота"""
@@ -308,21 +393,31 @@ def main():
         print("❌ Установите BOT_TOKEN в переменных окружения или в config.py")
         return
     
-    # Создаем приложение
-    application = Application.builder().token(config.BOT_TOKEN).build()
-    
     # Создаем экземпляр бота
     bot = EmailScraperBot()
     
-    # Добавляем обработчики
+    # Создаем приложение
+    application = Application.builder().token(config.BOT_TOKEN).build()
+    
+    # --- Основные команды ---
     application.add_handler(CommandHandler("start", bot.start))
     application.add_handler(CommandHandler("help", bot.help_command))
     application.add_handler(CommandHandler("status", bot.status_command))
+
+    # --- Обработчики кнопок меню ---
+    application.add_handler(MessageHandler(filters.Regex('^🚀 Начать скрапинг$'), bot.show_scraping_instructions))
+    application.add_handler(MessageHandler(filters.Regex('^📈 Мой статус$'), bot.status_command))
+    application.add_handler(MessageHandler(filters.Regex('^❓ Помощь$'), bot.help_command))
+
+    # --- Обработчики контента ---
     application.add_handler(MessageHandler(filters.Document.ALL, bot.handle_document))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^🚀 Начать скрапинг$') & ~filters.Regex('^📈 Мой статус$') & ~filters.Regex('^❓ Помощь$'), bot.handle_text_urls))
+    
+    # --- Обработчик колбэков ---
     application.add_handler(CallbackQueryHandler(bot.cancel_task, pattern=r"cancel_\d+"))
     
     # Запускаем бота
-    print("🚀 Бот запущен!")
+    print("🚀 Бот запущен с главным меню!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':

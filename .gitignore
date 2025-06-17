@@ -40,9 +40,6 @@ ENV/
 *.xlsx
 *.xls
 
-# Local configuration
-config.py
-
 # Папки с бэкапами и результатами
 project_snapshots/
 *.csv
